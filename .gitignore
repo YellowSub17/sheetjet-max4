@@ -1,0 +1,7 @@
+data/20261104/*
+data/20261105/*
+
+.DS_Store
+*.npy
+
+src/__pycache__
