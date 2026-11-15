@@ -10,7 +10,8 @@ import matplotlib.pyplot as plt
 
 
 
-from const import DATA_DIR
+
+from const import *
 
 class RunData():
 
@@ -25,8 +26,120 @@ class RunData():
         self.master_path = f'{DATA_DIR}/{self.date}/raw/{group}/{group}-{sub_group}/{group}-{sub_group}_{run_number}_master.h5'
 
 
+
+        ## load relevant stuff from the master h5
         with h5py.File(self.master_path, 'r') as f:
-            self.data =  f['/entry/data/data_000001'][:]
+            self.azint_i = f['/entry/azint/dataset'][0,:]
+            self.azint_q = f['/entry/azint/bin_to_q'][0,:]
+            self.atten = f['/entry/instrument/attenuator/attenuator_transmission'][...]
+            self.lamb = f['/entry/instrument/beam/incident_wavelength'][...]
+            self.beam_x = f['/entry/instrument/detector/beam_center_x'][...]
+            self.beam_y = f['/entry/instrument/detector/beam_center_y'][...]
+            self.count_time = f['/entry/instrument/detector/count_time'][...]
+
+            self.n_images = f['/entry/instrument/detector/detectorSpecific/nimages'][...]
+
+            self.clen = f['/entry/instrument/detector/distance'][...]
+
+            self.adu_hists = np.zeros((18,2048))
+            for module_i in range(18):
+                self.adu_hists[module_i,:] = f[f'/entry/instrument/detector/detectorSpecific/adu_histogram/module{module_i}'][:]
+
+
+
+
+
+        #calculate whatever else you might need
+        self.xpts= (np.arange(DET_SHAPE[1]) - self.beam_x)*PIXEL_DX
+        self.ypts = (np.arange(DET_SHAPE[0]) - self.beam_y)*PIXEL_DX
+
+        self.xx, self.yy = np.meshgrid(self.xpts, self.ypts)
+
+        self.r_map = np.hypot(self.xx, self.yy)
+        self.two_theta_map = np.arctan2(self.r_map, self.clen)
+        self.q_map = 4 * np.pi / self.lamb * np.sin(self.two_theta_map/2)
+
+
+    def get_mask(self,qmin = 0.1, qmax=3,):
+        mask = np.zeros(DET_SHAPE, bool)
+
+        global_mask = np.load(f'{DATA_DIR}/global_mask.npy')
+        with h5py.File(self.master_path, 'r') as f:
+            run_mask = f['/entry/instrument/detector/pixel_mask'][:]
+
+        mask[global_mask>0] = True
+        mask[run_mask>0] = True
+        mask[self.q_map<qmin] = True
+        mask[self.q_map>qmax] = True
+
+        return mask
+
+    def get_data(self):
+        with h5py.File(self.master_path, 'r') as f:
+            data =  f['/entry/data/data_000001'][:]
+        return data
+
+
+    def calc_hist(self):
+        mask = self.get_mask()
+        data = self.get_data()
+
+
+
+
+
+
+    def calc_powders(self, nq = 256, qmin = 0.1, qmax=2.3, inten_min=0, inten_max=650, run_mean=False):
+
+        mask = self.get_mask(qmin=qmin, qmax=qmax)
+        data = self.get_data()
+
+
+        if run_mean:
+            data = np.mean(data, axis=0, dtype=np.float64)[np.newaxis]
+
+        n = data.shape[0]
+
+        edges = np.linspace(qmin, qmax, nq + 1)
+        qidx = np.digitize(self.q_map, edges).ravel() - 1         # -1 or nq = out of range
+        qcen = 0.5 * (edges[1:] + edges[:-1])
+        mask_flat = mask.ravel()
+
+
+        powders = np.full((n, nq), np.nan)
+
+        for i in range(n):
+            img = data[i].ravel().astype(np.float32)
+            keep = (~mask_flat
+                    & np.isfinite(img)
+                    & (img >= inten_min) & (img <= inten_max)
+                    & (qidx >= 0) & (qidx < nq))
+            s = np.bincount(qidx[keep], weights=img[keep], minlength=nq)
+            c = np.bincount(qidx[keep], minlength=nq)
+            np.divide(s, c, out=powders[i], where=c > 0)
+
+
+        if run_mean:
+            return powders[0], qcen, c   # 1D pattern for the averaged image
+        else:
+            return powders, qcen, c
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -38,84 +151,61 @@ class RunData():
 
 if __name__=='__main__':
 
+
     r =  RunData()
 
 
-    # np.save('./mean.npy', r.data.mean(axis=0))
+    q_rois = [0.314, 0.544, 0.647, 1.098, 1.547, 1.97, 2.3]
 
-    # np.save('./frame0.npy', r.data[0])
-    # np.save('./frame1.npy', r.data[1])
-    # np.save('./frame5.npy', r.data[5])
-    # np.save('./frame10.npy', r.data[10])
-    # np.save('./frame100.npy', r.data[100])
+    cols= 'rgbcmyk'
 
-    # frame = np.load('./frame100.npy').astype(np.float32)
-    frame = np.load('./mean.npy').astype(np.float32)
-
-    frame[frame==-2147483648] = np.nan
-
-    frame_median = np.nanmedian(frame)
-
-    plt.figure()
-    plt.hist(frame[~np.isnan(frame)].flatten(), range=(0, frame_median*3), bins=100)
+    p, q ,c = r.calc_powders(run_mean=True)
+    plt.figure(figsize=(8,8))
+    plt.plot(q, c)
+    plt.vlines(q_rois, ymin=0, ymax=np.max(c), colors = list(cols), linestyle='dashed')
 
 
-    plt.figure()
-    plt.imshow(frame, vmin=0, vmax=frame_median*3)
-
-    plt.figure()
-    plt.imshow(frame>500)
+    plt.figure(figsize=(8,8))
+    plt.plot(q, p)
+    plt.vlines(q_rois, ymin=0, ymax=np.max(p), colors = list(cols), linestyle='dashed')
 
 
-    # for frame_i in [1, 5, 10, 100]:
-        # frame_iter = np.load(f'./frame{frame_i}.npy').astype(int)
-        # plt.figure()
-        # plt.imshow(frame==frame_iter)
+
+    p, q ,c = r.calc_powders()
+    plt.figure(figsize=(8,8))
+    for i in range(0, p.shape[0], 10):
+        plt.plot(q, p[i])
+    plt.vlines(q_rois, ymin=0, ymax=np.max(p), colors = list(cols), linestyle='dashed')
 
 
 
 
 
 
+    d = r.get_data()
+
+    mean = np.mean(d, axis=0, dtype=np.float64)
 
 
+    m = r.get_mask()
+    mean[m] = np.nan
 
 
+    q_circle = 2
 
-    # frame = np.load('./mean.npy')
-
-    # print(np.where(r.data< -1))
-
-    # frame[frame>1000] = 0
-    # frame[frame<0] = 0
-
-#     plt.figure()
-    # plt.imshow(frame)
-    # plt.colorbar()
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.imshow(mean, origin='upper', cmap='viridis', vmin=0, vmax=550)
 
 
-
-    # plt.figure()
-    # plt.hist(frame, bins=100)
-
-
-
-
-    # plt.figure()
-    # plt.imshow(r.data[0] < -1, vmin=0, vmax=400)
-
-    # # plt.figure()
-    # # plt.imshow(r.data.mean(axis=0), vmin=0, vmax=400)
-
-    # # plt.figure()
-    # # plt.imshow(r.data[0]-r.data[100], vmin=0, vmax=10)
-
-    # plt.figure()
-    # plt.hist(r.data[0].flatten())
-
-
-
+    ax.contour(r.q_map, levels=q_rois, colors=list(cols), linewidths=1.5, linestyles='dashed')
+    ax.plot(r.beam_x, r.beam_y, 'r+', ms=12)
     plt.show()
+
+
+
+
+
+
 
 
 
