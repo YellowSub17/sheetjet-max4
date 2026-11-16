@@ -7,6 +7,9 @@ import h5py
 import hdf5plugin
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy import ndimage
+
+import os
 
 
 
@@ -17,12 +20,13 @@ class RunData():
 
 
 
-    def __init__(self, date = 20261105, group='GoldNR_1X', sub_group='longaxis', run_number=6):
+    def __init__(self, date = 20261105, group='water', sub_group='longaxis', run_number=4):
 
         self.date = date
         self.group = group
         self.sub_group = sub_group
         self.run_number = run_number
+        self._beamstop_masks = {}   # cached by calc_beamstop_mask, keyed on its parameters
         self.master_path = f'{DATA_DIR}/{self.date}/raw/{group}/{group}-{sub_group}/{group}-{sub_group}_{run_number}_master.h5'
 
 
@@ -38,6 +42,8 @@ class RunData():
             self.count_time = f['/entry/instrument/detector/count_time'][...]
 
             self.n_images = f['/entry/instrument/detector/detectorSpecific/nimages'][...]
+
+
 
             self.clen = f['/entry/instrument/detector/distance'][...]
 
@@ -69,10 +75,34 @@ class RunData():
 
         mask[global_mask>0] = True
         mask[run_mask>0] = True
+        mask[self.calc_beamstop_mask()] = True
         mask[self.q_map<qmin] = True
         mask[self.q_map>qmax] = True
 
         return mask
+
+    def calc_beamstop_mask(self, inten_max=50, grow=40, min_size=1000):
+        '''
+            True: pixels in the beamstop shadow, False everywhere else.
+
+            Pixels in the run mean below inten_max are the beamstop. Only clusters bigger than
+            min_size are kept (the gaps/seams split the beamstop into several pieces, and
+            isolated dead pixels shouldn't be grown), then grown by `grow` px to cover the penumbra.
+        '''
+        key = (inten_max, grow, min_size)
+        if key not in self._beamstop_masks:
+            mean = np.mean(self.get_data(), axis=0, dtype=np.float64)
+
+            # gap/flagged pixels average out hugely negative, so keep them out of the beamstop
+            low = (mean >= 0) & (mean < inten_max)
+
+            labels, n = ndimage.label(low)
+            sizes = ndimage.sum(low, labels, range(1, n+1))
+            beamstop = np.isin(labels, np.where(sizes >= min_size)[0] + 1)
+
+            self._beamstop_masks[key] = ndimage.binary_dilation(beamstop, iterations=grow)
+
+        return self._beamstop_masks[key]
 
     def get_data(self):
         with h5py.File(self.master_path, 'r') as f:
@@ -83,6 +113,11 @@ class RunData():
     def calc_hist(self):
         mask = self.get_mask()
         data = self.get_data()
+
+
+    def check_proc(self):
+        pass
+
 
 
 

@@ -4,6 +4,7 @@
 
 
 DATA_DIR = '/Users/pat/Documents/work/sheetjet-max4/data'
+PROC_DIR = f'{DATA_DIR}/proc'
 
 
 
