@@ -92,6 +92,7 @@ and `/powder/I`), and a run is redone when they, the data files present or the c
 | `src/rundata.py` | `RunData`: reads a run, builds the run mask, computes and saves the powders |
 | `scripts/process.py` | processes every run (mask, powders and frame statistics), skipping runs already done |
 | `scripts/calib_flatfield.py` | fits the per-module flat field from the steps across module boundaries |
+| `scripts/slurm_process.sh`, `scripts/submit_all.sh` | SLURM job for one group, and the commands to submit one job per group |
 | `scripts/check_blob.py` | checks whether the bright blob changes shape within or between runs |
 | `plot/plot_powders.py` | powders of a run: I(q) against frame, and the mean |
 | `plot/plot_mask.py` | mask labels next to the run mean, and the mask overlaid on the mean |
@@ -110,6 +111,17 @@ python scripts/process.py --date 20261105 --group water
 python scripts/process.py --date 20261105 --overwrite      # redo everything
 python scripts/process.py                                   # every date
 ```
+
+On a SLURM cluster, run one job per group. From the repo root (with the flat field already made):
+
+```
+bash scripts/submit_all.sh            # prints an sbatch command for every group in data/*/raw/
+bash scripts/submit_all.sh | bash     # submits them; logs go to logs/
+sbatch --job-name=proc_water scripts/slurm_process.sh water     # a single group
+```
+
+Edit the `#SBATCH` lines in `scripts/slurm_process.sh` (time, memory, partition, account) for your
+cluster.
 
 Make the flat field from the water runs, then reprocess so the powders use it:
 
