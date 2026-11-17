@@ -1,7 +1,9 @@
-data/20261104/*
-data/20261105/*
+data/
 
 .DS_Store
 *.npy
 
-src/__pycache__
+__pycache__/
+.venv/
+*.egg-info/
+build/
