@@ -6,7 +6,7 @@ import traceback
 
 
 from const import *
-from rundata import RunData
+from rundata import RunData, STATS_VERSION
 
 
 
@@ -33,16 +33,16 @@ def process_run(run, overwrite=False):
         m = run.create_run_mask(overwrite=overwrite)
         print(f'    mask: {(m>0).sum()} px')
 
-    if overwrite or run.read_proc('powder/I', data_files) is None:
-        powders, _, _ = run.save_powders()
-        print(f'    powders: {powders.shape}')
+    if overwrite or run.read_proc('powder/I', dict(data_files, version=STATS_VERSION)) is None:
+        out = run.save_frame_stats()
+        print(f'    powders: {out["powder_I"].shape}, saturated px: {out["n_saturated"].sum()}')
 
 
 
 
 if __name__=='__main__':
 
-    parser = argparse.ArgumentParser(description='Beamstop masks and per-frame powders for every run.')
+    parser = argparse.ArgumentParser(description='Run masks, per-frame powders and frame statistics for every run.')
     parser.add_argument('--date', type=int)
     parser.add_argument('--group')
     parser.add_argument('--overwrite', action='store_true')

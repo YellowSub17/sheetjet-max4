@@ -51,6 +51,14 @@ def _slice_edges(slices, frac, core_frac, both_sides=True, min_valid=0.5):
 # bump when the create_run_mask method changes, so masks saved by an older method are recomputed
 MASK_VERSION = 6
 
+# bump when calc_frame_stats changes, so proc files made by an older version are redone
+STATS_VERSION = 1
+
+
+def hist_edges():
+    '''Edges of the raw-value histograms: unit bins centred on -16 ... 1023, then 48 log bins up to 2^24.'''
+    return np.concatenate([np.arange(-16.5, 1024), np.geomspace(1023.5, 2**24, 49)[1:]])
+
 
 class RunData():
 
@@ -81,6 +89,8 @@ class RunData():
             self.count_time = f['/entry/instrument/detector/count_time'][...]
 
             self.n_images = f['/entry/instrument/detector/detectorSpecific/nimages'][...]
+            sat = f.get('/entry/instrument/detector/saturation_value')
+            self.saturation_value = int(sat[()]) if sat is not None else 2147483646
 
 
 
@@ -409,58 +419,144 @@ class RunData():
                     self._flatfield = f['flatfield'][...]
         return self._flatfield
 
-    def calc_powders(self, nq = 256, qmin = 0.3, qmax=2.3, inten_min=0, inten_max=650, run_mean=False):
-        '''
-            Azimuthally averaged I(q) for every frame (streamed through the run), or for the
-            run mean if run_mean=True. Returns (powders, q, counts); counts are pixels per bin
-            for each frame, since the intensity cut changes them frame to frame.
-
-            Frames are divided by the flat field before the intensity cut and binning.
-        '''
+    def _powder_bins(self, nq, qmin, qmax, n_sec):
+        '''Good pixels in the powder q range (flat indices), their q bin, cake bin and flat field.'''
         mask = self.get_mask(qmin=qmin, qmax=qmax)
-
         edges = np.linspace(qmin, qmax, nq + 1)
         qidx = np.digitize(self.q_map, edges).ravel() - 1         # -1 or nq = out of range
-        qcen = 0.5 * (edges[1:] + edges[:-1])
-
-        # pixels that pass the mask and q range: only the intensity cut changes per frame
         sel = np.where(~mask.ravel() & (qidx >= 0) & (qidx < nq))[0]
         qidx = qidx[sel]
-        flatfield = self.get_flatfield().ravel()[sel]
 
-        if run_mean:
-            frames = [(0, self.calc_mean()[np.newaxis])]
-            n = 1
-        else:
-            frames = self.iter_frames()
-            n = self.n_frames()
+        # cake: nq/2 q bins (pairs of powder bins) x n_sec sectors centred on 0, 90, 180, 270 deg
+        phi = np.arctan2(self.yy, self.xx).ravel()[sel]
+        sec = np.floor((phi / (2*np.pi) + 0.5/n_sec) * n_sec).astype(int) % n_sec
+        cidx = (qidx // 2) * n_sec + sec
 
-        powders = np.full((n, nq), np.nan)
-        counts = np.zeros((n, nq), int)
+        return sel, qidx, cidx, 0.5*(edges[1:] + edges[:-1]), self.get_flatfield().ravel()[sel]
 
-        for start, block in frames:
+    def calc_frame_stats(self, nq=256, qmin=0.3, qmax=2.3, n_sec=16, nq_hist=64):
+        '''
+            Everything per frame, in one pass through the run. Saturated pixels (>= the detector's
+            saturation value) are left out of the intensities; there is no other intensity cut.
+
+            Flat-fielded, good pixels in [qmin, qmax]:
+                powder_I, powder_std, powder_counts   (n, nq)   mean, std and pixel count per q bin
+                cake_I                                (n, nq/2, n_sec) mean per q bin and sector
+                total                                 (n,)      summed intensity
+            Raw values, all good pixels:
+                hist_frame                            (n, nbins) histogram per frame (edges: hist_edges)
+                hist_q                                (nq_hist, nbins) run histogram per q bin (edges: hist_q_edges)
+                max                                   (n,)      largest unsaturated value
+            Raw values, every pixel:
+                n_saturated                           (n,)
+                std_image, max_image                  (H, W)    per-pixel std and max over the run
+        '''
+        sel, qidx, cidx, q, flatfield = self._powder_bins(nq, qmin, qmax, n_sec)
+        nc = (nq // 2) * n_sec
+
+        # histograms: all good pixels, any q
+        hsel = np.where(~self.get_mask(qmin=0, qmax=np.inf).ravel())[0]
+        edges = hist_edges()
+        nb = len(edges) + 1
+        hist_q_edges = np.linspace(0, self.q_map.max() * (1 + 1e-6), nq_hist + 1)
+        hq = (np.digitize(self.q_map.ravel()[hsel], hist_q_edges) - 1) * nb
+
+        n = self.n_frames()
+        out = dict(powder_I=np.full((n, nq), np.nan, np.float32), powder_std=np.full((n, nq), np.nan, np.float32),
+                   powder_counts=np.zeros((n, nq), np.int32), cake_I=np.full((n, nq // 2, n_sec), np.nan, np.float32),
+                   total=np.zeros(n), hist_frame=np.zeros((n, nb), np.int32), max=np.zeros(n, np.int64),
+                   n_saturated=np.zeros(n, np.int64))
+        hist_q = np.zeros(nq_hist * nb, np.int64)
+        total_img = np.zeros(DET_SHAPE, np.float64)
+        sq_img = np.zeros(DET_SHAPE, np.float64)
+        max_img = np.full(DET_SHAPE, np.iinfo(np.int32).min, np.int64)
+
+        for start, block in self.iter_frames():
             for j, frame in enumerate(block):
                 i = start + j
-                img = frame.ravel()[sel].astype(np.float32) / flatfield
-                keep = np.isfinite(img) & (img >= inten_min) & (img <= inten_max)
-                s = np.bincount(qidx[keep], weights=img[keep], minlength=nq)
-                counts[i] = np.bincount(qidx[keep], minlength=nq)
-                np.divide(s, counts[i], out=powders[i], where=counts[i] > 0)
+                flat = frame.ravel()
 
-        if run_mean:
-            return powders[0], qcen, counts[0]   # 1D pattern for the averaged image
-        else:
-            return powders, qcen, counts
+                raw = flat[sel]
+                ok = raw < self.saturation_value
+                img = raw[ok].astype(np.float64) / flatfield[ok]
+                s = np.bincount(qidx[ok], img, nq)
+                s2 = np.bincount(qidx[ok], img**2, nq)
+                c = np.bincount(qidx[ok], minlength=nq)
+                with np.errstate(invalid='ignore', divide='ignore'):
+                    mean = s / c
+                    out['powder_I'][i] = mean
+                    out['powder_std'][i] = np.sqrt(np.maximum(s2 / c - mean**2, 0))
+                    out['cake_I'][i] = (np.bincount(cidx[ok], img, nc) / np.bincount(cidx[ok], minlength=nc)
+                                        ).reshape(nq // 2, n_sec)
+                out['powder_counts'][i] = c
+                out['total'][i] = img.sum()
 
-    def save_powders(self, nq = 256, qmin = 0.3, qmax=2.3, inten_min=0, inten_max=650):
-        '''Per-frame powders into the proc file: /powder/I, /powder/q, /powder/counts.'''
-        params = dict(nq=nq, qmin=qmin, qmax=qmax, inten_min=inten_min, inten_max=inten_max)
-        powders, q, counts = self.calc_powders(**params)
-        self.write_proc('powder/I', powders, dict(params, flatfield=str(self.flatfield_path),
-                                                  data_files=self.data_files_attr()))
-        self.write_proc('powder/q', q)
-        self.write_proc('powder/counts', counts)
-        return powders, q, counts
+                raw = flat[hsel]
+                # integer values: unit bins by offset (bin k holds k-17), only the rare large values searched
+                h = np.clip(raw, -17, 1024) + 17
+                big = raw >= 1024
+                h[big] = np.searchsorted(edges, raw[big], side='right')
+                out['hist_frame'][i] = np.bincount(h, minlength=nb)
+                hist_q += np.bincount(hq + h, minlength=nq_hist * nb)
+                out['max'][i] = raw[raw < self.saturation_value].max(initial=0)
+
+                out['n_saturated'][i] = (flat >= self.saturation_value).sum()
+                f64 = frame.astype(np.float64)
+                total_img += f64
+                sq_img += f64**2
+                np.maximum(max_img, frame, out=max_img)
+
+        mean_img = total_img / n
+        out['std_image'] = np.sqrt(np.maximum(sq_img / n - mean_img**2, 0)).astype(np.float32)
+        out['max_image'] = max_img.astype(np.int32)
+        out.update(q=q, cake_q=0.5 * (q[0::2] + q[1::2]), cake_phi=np.arange(n_sec) * 360 / n_sec,
+                   cake_counts=np.bincount(cidx, minlength=nc).reshape(nq // 2, n_sec),
+                   hist_edges=edges, hist_q=hist_q.reshape(nq_hist, nb), hist_q_edges=hist_q_edges)
+        return out
+
+    def calc_powders(self, nq = 256, qmin = 0.3, qmax=2.3, run_mean=False):
+        '''
+            Azimuthally averaged I(q) for every frame, or for the run mean if run_mean=True.
+            Returns (powders, q, counts). Per frame, this is the powder part of calc_frame_stats.
+        '''
+        if not run_mean:
+            out = self.calc_frame_stats(nq, qmin, qmax)
+            return out['powder_I'], out['q'], out['powder_counts']
+
+        sel, qidx, _, q, flatfield = self._powder_bins(nq, qmin, qmax, n_sec=16)
+        img = self.calc_mean(np.float64).ravel()[sel] / flatfield
+        ok = np.isfinite(img)
+        counts = np.bincount(qidx[ok], minlength=nq)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            return np.bincount(qidx[ok], img[ok], nq) / counts, q, counts
+
+    def save_frame_stats(self, nq=256, qmin=0.3, qmax=2.3, n_sec=16, nq_hist=64):
+        '''calc_frame_stats into the proc file (see the README for the layout).'''
+        params = dict(nq=nq, qmin=qmin, qmax=qmax, n_sec=n_sec, nq_hist=nq_hist)
+        out = self.calc_frame_stats(**params)
+
+        # written last, so an interrupted run has no /powder/I and is redone
+        self.write_proc('powder/q', out['q'])
+        self.write_proc('powder/counts', out['powder_counts'])
+        self.write_proc('powder/std', out['powder_std'])
+        self.write_proc('cake/I', out['cake_I'], dict(n_sec=n_sec))
+        self.write_proc('cake/q', out['cake_q'])
+        self.write_proc('cake/phi', out['cake_phi'], dict(units='deg, 0 = +x (right), 90 = +y (down), sector centres'))
+        self.write_proc('cake/counts', out['cake_counts'])
+        self.write_proc('hist/frame', out['hist_frame'], dict(values='raw (not flat-fielded), good pixels'))
+        self.write_proc('hist/edges', out['hist_edges'], dict(note='bin k counts values in [edges[k-1], edges[k]); '
+                                                                     'bin 0 is below edges[0], the last bin is >= edges[-1]'))
+        self.write_proc('hist/q', out['hist_q'])
+        self.write_proc('hist/q_edges', out['hist_q_edges'])
+        self.write_proc('frame/total', out['total'])
+        self.write_proc('frame/max', out['max'])
+        self.write_proc('frame/n_saturated', out['n_saturated'])
+        self.write_proc('std', out['std_image'])
+        self.write_proc('max', out['max_image'])
+        self.write_proc('powder/I', out['powder_I'], dict(params, flatfield=str(self.flatfield_path),
+                                                            saturation_value=self.saturation_value,
+                                                            data_files=self.data_files_attr(), version=STATS_VERSION))
+        return out
 
     def n_frames(self):
         with h5py.File(self.master_path, 'r') as f:

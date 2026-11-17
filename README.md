@@ -61,8 +61,27 @@ e.g. `data/20261105/raw/water/water-longaxis/water-longaxis_4_master.h5`.
 A run with some data files missing is processed with the files present (with a warning) and is
 redone automatically once the rest arrive.
 
-Each proc file holds `/mean` (run mean image), `/mask` (labelled mask), and `/powder/I`,
-`/powder/q`, `/powder/counts` (per-frame powders), with the parameters used stored as attributes.
+### Proc file contents
+
+Everything per frame comes from one pass through the raw data. Intensities are flat-fielded and use
+only good pixels (`mask == 0`); saturated pixels are left out, with no other intensity cut. The
+histograms use the raw values instead. The parameters used are stored as attributes (on `/mask`
+and `/powder/I`), and a run is redone when they, the data files present or the code version change.
+
+| Dataset | Shape | |
+|---|---|---|
+| `/mask` | (H, W) uint8 | labelled mask (see [Mask labels](#mask-labels)) |
+| `/mean`, `/std`, `/max` | (H, W) | per-pixel mean, standard deviation and maximum over the run (raw) |
+| `/powder/I`, `/powder/std` | (frames, 256) | mean and std of the pixels in each q bin (q 0.3-2.3) |
+| `/powder/counts` | (frames, 256) | pixels per q bin |
+| `/powder/q` | (256,) | bin centres (1/A) |
+| `/cake/I` | (frames, 128, 16) | mean I(q, phi): 128 q bins x 16 azimuthal sectors |
+| `/cake/q`, `/cake/phi`, `/cake/counts` | | bin centres (phi in deg: 0 = right, 90 = down) and pixels per bin |
+| `/hist/frame` | (frames, 1090) | histogram of raw pixel values per frame, all good pixels |
+| `/hist/q` | (64, 1090) | the same summed over the run, in 64 q bins (edges `/hist/q_edges`) |
+| `/hist/edges` | (1089,) | unit bins for values -16 to 1023, then 48 log bins up to 2^24; bin 0 is below the first edge, the last bin above the last |
+| `/frame/total` | (frames,) | total intensity of the good pixels in the q range |
+| `/frame/max`, `/frame/n_saturated` | (frames,) | largest unsaturated pixel value, number of saturated pixels |
 
 
 ## Layout
@@ -71,13 +90,14 @@ Each proc file holds `/mean` (run mean image), `/mask` (labelled mask), and `/po
 |---|---|
 | `src/const.py` | detector geometry, data paths |
 | `src/rundata.py` | `RunData`: reads a run, builds the run mask, computes and saves the powders |
-| `scripts/process.py` | processes every run (mask and powders), skipping runs already done |
+| `scripts/process.py` | processes every run (mask, powders and frame statistics), skipping runs already done |
 | `scripts/calib_flatfield.py` | fits the per-module flat field from the steps across module boundaries |
 | `scripts/check_blob.py` | checks whether the bright blob changes shape within or between runs |
 | `plot/plot_powders.py` | powders of a run: I(q) against frame, and the mean |
 | `plot/plot_mask.py` | mask labels next to the run mean, and the mask overlaid on the mean |
 | `plot/plot_ff.py` | flat field used for a run, with each module's gain |
 | `plot/plot_aniso.py` | azimuthal anisotropy of sample and gas runs |
+| `plot/plot_qc.py` | QC image per run and `summary.csv` of all runs, in `data/proc/qc/` |
 
 
 ## Usage
@@ -88,6 +108,7 @@ Process all runs of a date (or one group), from the repo root:
 python scripts/process.py --date 20261105
 python scripts/process.py --date 20261105 --group water
 python scripts/process.py --date 20261105 --overwrite      # redo everything
+python scripts/process.py                                   # every date
 ```
 
 Make the flat field from the water runs, then reprocess so the powders use it:
@@ -95,6 +116,14 @@ Make the flat field from the water runs, then reprocess so the powders use it:
 ```
 python scripts/calib_flatfield.py --name water --group water
 python scripts/process.py --date 20261105 --overwrite
+```
+
+Check the masks and frames of every processed run: one image per run and a table of all runs
+(mask label counts, beamstop extent, low-intensity frames, saturated pixels, completeness, and the
+run's row of `data/datalog.csv`) in `data/proc/qc/`:
+
+```
+python plot/plot_qc.py
 ```
 
 Plot from a proc file:
