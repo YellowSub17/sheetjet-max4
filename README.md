@@ -9,7 +9,7 @@ processed files only.
 
 ## Install
 
-Requires Python >= 3.10.
+Requires Python >= 3.9.
 
 ```
 git clone <repo url> sheetjet-max4

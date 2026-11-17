@@ -7,7 +7,7 @@ name = "sheetjet-max4"
 version = "0.1.0"
 description = "Masks, flat field and per-frame powder patterns for liquid-sheet-jet data from the JUNGFRAU 9M at MAX IV"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 dependencies = [
     "numpy",
     "scipy",
