@@ -163,7 +163,7 @@ mask = run.create_run_mask()      # loads the saved mask if its parameters match
 run.save_frame_stats()
 
 # proc file: datasets are read when first used
-p = ProcData('data/proc/water/water-longaxis_4_proc.h5')      # or ProcData.from_run('water', 'longaxis', 4)
+p = ProcData('water', 'longaxis', 4)       # or ProcData.from_path('data/proc/water/water-longaxis_4_proc.h5')
 p.q, p.I, p.mask > 0, p['cake/I'], p.attrs['clen']
 
 # post-processing: powders and cake corrected for solid angle and polarization
@@ -179,7 +179,7 @@ The 20261104 gas runs were taken at 0.226 m and the 20261105 runs at 0.266 m; `s
 geometry of every run.
 
 The stored powders and cake are **not** corrected for solid angle or polarization. Use
-`ProcData(proc_path).corrected(solid_angle=True, polarization=True, pol_frac=0.99)` to get them
+`ProcData(group, sub_group, run).corrected(solid_angle=True, polarization=True, pol_frac=0.99)` to get them
 corrected: the solid-angle correction makes the intensities per steradian, so runs at different
 detector distances can be compared, and the polarization correction assumes a beam polarized along
 the detector x axis (horizontal) by `pol_frac`. Without the corrections the water peak sits at

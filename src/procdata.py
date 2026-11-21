@@ -38,7 +38,7 @@ def pixel_factors(xx, yy, two_theta, clen, solid_angle=True, polarization=True, 
 
 def as_procdata(p):
     '''A ProcData from a ProcData or a proc file path.'''
-    return p if isinstance(p, ProcData) else ProcData(p)
+    return p if isinstance(p, ProcData) else ProcData.from_path(p)
 
 
 
@@ -47,15 +47,21 @@ class ProcData():
         One run's proc file. Datasets are read when first asked for and then kept, so the large
         per-pixel images (/std, /max) cost nothing unless used:
 
-            p = ProcData('data/proc/water/water-longaxis_4_proc.h5')
+            p = ProcData('water', 'longaxis', 4)
             p['powder/I'], p.mask, p.attrs['clen']
             c = p.corrected()        # solid angle and polarization corrected powders and cake
     '''
 
-    def __init__(self, path):
+    def __init__(self, group=None, sub_group=None, run_number=None, path=None):
+        '''The run's proc file (data/proc/{group}/{group}-{sub_group}_{run_number}_proc.h5), or the
+        file at path (see from_path).'''
+        if path is None:
+            if None in (group, sub_group, run_number):
+                raise TypeError('give group, sub_group and run_number (or path=...)')
+            path = proc_path(group, sub_group, run_number)
         if not os.path.exists(path):
             raise FileNotFoundError(f'{path} not found: process the run first (scripts/process.py)')
-        self.path = path
+        self.path = os.path.abspath(path)
         with h5py.File(path, 'r') as f:
             self.attrs = dict(f.attrs)
             self.datasets = []
@@ -64,8 +70,9 @@ class ProcData():
         self._geometry = {}
 
     @classmethod
-    def from_run(cls, group, sub_group, run_number):
-        return cls(proc_path(group, sub_group, run_number))
+    def from_path(cls, path):
+        '''Open a proc file by its path, e.g. one given on the command line.'''
+        return cls(path=path)
 
     def __repr__(self):
         return f'ProcData({self.path!r})'

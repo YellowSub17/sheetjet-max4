@@ -165,7 +165,7 @@ if __name__=='__main__':
     rows = []
     for path in proc_files():
         try:
-            p = ProcData(path)
+            p = ProcData.from_path(path)
             png = f'{QC_DIR}/{p.name}.png'
             redraw = args.overwrite or not os.path.exists(png) or os.path.getmtime(png) < os.path.getmtime(path)
             if redraw and args.group in (None, p.group):
