@@ -1,11 +1,10 @@
 import sys
 
-import h5py
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap, BoundaryNorm
 
-from plot_powders import load_proc
+from procdata import as_procdata
 
 
 
@@ -14,37 +13,29 @@ LABEL_COLOURS = ['white', 'black', 'tab:orange', 'tab:green', 'tab:red', 'tab:bl
 
 
 
-def mask_labels(proc_path):
-    '''Label names saved with the mask (e.g. edges-4px), falling back to generic names.'''
-    with h5py.File(proc_path, 'r') as f:
-        labels = f['mask'].attrs.get('labels')
-    if labels is None:
-        return ['good', 'gaps', 'edges', 'seams', 'beamstop', 'blob']
-    return [l.decode() if isinstance(l, bytes) else str(l) for l in labels]
-
-
-def plot_mask_values(proc_path):
+def plot_mask_values(p):
     '''
         Left: the mask, one colour per label. Right: the run mean, with only the gaps, edges and
         seams (labels 1-3, the same in every run) blanked out, so the pixels the run-specific
         labels mask can be seen. The axes are shared, so zooming one zooms the other.
+        p: ProcData or proc file path.
     '''
-    p = load_proc(proc_path)
-    labels = mask_labels(proc_path)
+    p = as_procdata(p)
+    labels = p.labels
 
     cmap = ListedColormap(LABEL_COLOURS[:len(labels)])
     norm = BoundaryNorm(np.arange(len(labels)+1) - 0.5, len(labels))
 
-    mean = p['mean'].astype(float)
-    mean[np.isin(p['mask'], [1, 2, 3])] = np.nan   # negative/overflowing pixels stay, at the ends of the colour scale
-    run_specific = p['mask'] >= 4
+    mean = p.mean.astype(float)
+    mean[np.isin(p.mask, [1, 2, 3])] = np.nan   # negative/overflowing pixels stay, at the ends of the colour scale
+    run_specific = p.mask >= 4
 
     fig, axs = plt.subplots(1, 2, figsize=(17, 8), sharex=True, sharey=True)
 
-    im = axs[0].imshow(p['mask'], cmap=cmap, norm=norm, interpolation='nearest')
+    im = axs[0].imshow(p.mask, cmap=cmap, norm=norm, interpolation='nearest')
     cbar = fig.colorbar(im, ax=axs[0], ticks=range(len(labels)))
     cbar.ax.set_yticklabels([f'{i}: {l}' for i, l in enumerate(labels)])
-    axs[0].set_title(f'{proc_path.split("/")[-1]}  mask values')
+    axs[0].set_title(f'{p.name}  mask values')
 
     # colour scale from the pixels that stay in (99.5th percentile, so strong gradients don't
     # saturate), so the masked ones stand out against it
@@ -53,25 +44,25 @@ def plot_mask_values(proc_path):
     axs[1].set_title('run mean (gaps, edges, seams blanked)')
 
 
-def plot_mask_overlay(proc_path):
+def plot_mask_overlay(p):
     '''Run mean with every mask except the gaps drawn on top (fully opaque).
-    Gaps are left as they are (nan in the mean, so they show up white).'''
-    p = load_proc(proc_path)
-    labels = mask_labels(proc_path)
+    Gaps are left as they are (nan in the mean, so they show up white). p: ProcData or proc file path.'''
+    p = as_procdata(p)
+    labels = p.labels
 
-    mean = p['mean'].astype(float)
+    mean = p.mean.astype(float)
     mean[mean < 0] = np.nan
 
     plt.figure(figsize=(8, 8))
     plt.imshow(mean, vmin=0, vmax=2*np.nanmedian(mean))
     overlay = list(range(2, len(labels)))   # everything but good and gaps
     for label in overlay:
-        m = p['mask'] == label
+        m = p.mask == label
         plt.imshow(np.ma.masked_where(~m, m), cmap=ListedColormap([LABEL_COLOURS[label]]), alpha=1,
                    interpolation='nearest')
-    plt.plot(p['attrs']['beam_x'], p['attrs']['beam_y'], 'k+', ms=12)
+    plt.plot(p.attrs['beam_x'], p.attrs['beam_y'], 'k+', ms=12)
     names = [f'{labels[i]} ({LABEL_COLOURS[i].replace("tab:", "")})' for i in overlay]
-    plt.title(f'{proc_path.split("/")[-1]}\n' + '\n'.join(', '.join(names[k:k+3]) for k in range(0, len(names), 3)),
+    plt.title(f'{p.name}\n' + '\n'.join(', '.join(names[k:k+3]) for k in range(0, len(names), 3)),
               fontsize=10)
 
 
@@ -80,9 +71,9 @@ def plot_mask_overlay(proc_path):
 
 if __name__=='__main__':
 
-    proc_path = sys.argv[1]
+    p = as_procdata(sys.argv[1])
 
-    plot_mask_values(proc_path)
-    plot_mask_overlay(proc_path)
+    plot_mask_values(p)
+    plot_mask_overlay(p)
 
     plt.show()

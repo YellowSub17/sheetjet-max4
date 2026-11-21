@@ -20,7 +20,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from const import *
-from rundata import RunData
+from rawdata import RawData
 from process import find_runs
 
 
@@ -134,7 +134,7 @@ if __name__=='__main__':
     for date, group, sub_group, run_number in find_runs(args.date, args.group):
         name = f'{date} {group}-{sub_group}_{run_number}'
         try:
-            results[name] = check_run(RunData(date, group, sub_group, run_number))
+            results[name] = check_run(RawData(date, group, sub_group, run_number))
         except FileNotFoundError as e:
             print(f'skipping {name}: {e}')
 

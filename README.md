@@ -20,7 +20,7 @@ pip install -e .
 ```
 
 This installs numpy, scipy, h5py, hdf5plugin (needed to read the compressed JUNGFRAU data) and
-matplotlib, and makes `src/rundata.py` and `src/const.py` importable from anywhere, so the scripts in
+matplotlib, and makes `src/rawdata.py`, `src/procdata.py` and `src/const.py` importable from anywhere, so the scripts in
 `scripts/` and `plot/` run from any folder. The install is editable: changes to `src/` take effect
 without reinstalling. Activate the environment (`source .venv/bin/activate`) in each new shell.
 
@@ -89,7 +89,8 @@ and `/powder/I`), and a run is redone when they, the data files present or the c
 | Path | |
 |---|---|
 | `src/const.py` | detector geometry, data paths |
-| `src/rundata.py` | `RunData`: reads a run, builds the run mask, computes and saves the powders |
+| `src/rawdata.py` | `RawData`: reads a raw run, builds the run mask, computes the powders and frame statistics, and writes them to the run's proc file |
+| `src/procdata.py` | `ProcData`: opens a proc file (datasets read on demand) and post-processes it, e.g. solid-angle and polarization corrections |
 | `scripts/process.py` | processes every run (mask, powders and frame statistics), skipping runs already done |
 | `scripts/calib_flatfield.py` | fits the per-module flat field from the steps across module boundaries |
 | `scripts/slurm_process.sh`, `scripts/submit_all.sh` | SLURM job for one group, and the commands to submit one job per group |
@@ -131,8 +132,8 @@ python scripts/process.py --date 20261105 --overwrite
 ```
 
 Check the masks and frames of every processed run: one image per run and a table of all runs
-(mask label counts, beamstop extent, low-intensity frames, saturated pixels, completeness, and the
-run's row of `data/datalog.csv`) in `data/proc/qc/`:
+(geometry, mask label counts, beamstop extent, low-intensity frames, saturated pixels, completeness,
+and the run's row of `data/datalog.csv`) in `data/proc/qc/`:
 
 ```
 python plot/plot_qc.py
@@ -150,13 +151,40 @@ python plot/plot_aniso.py $P --gas data/proc/gas_background/gas_background-gas_b
 
 In Python:
 
-```python
-from rundata import RunData
+Processing goes raw -> proc file -> post-processing:
 
-run = RunData(20261105, 'water', 'longaxis', 4)
+```python
+from rawdata import RawData
+from procdata import ProcData
+
+# raw data: build the mask and write everything to the proc file (what scripts/process.py does)
+run = RawData(20261105, 'water', 'longaxis', 4)
 mask = run.create_run_mask()      # loads the saved mask if its parameters match
-bad = mask > 0
+run.save_frame_stats()
+
+# proc file: datasets are read when first used
+p = ProcData('data/proc/water/water-longaxis_4_proc.h5')      # or ProcData.from_run('water', 'longaxis', 4)
+p.q, p.I, p.mask > 0, p['cake/I'], p.attrs['clen']
+
+# post-processing: powders and cake corrected for solid angle and polarization
+c = p.corrected()
+c['q'], c['I'], c['cake_I']
 ```
+
+### Geometry and corrections
+
+q is computed per run from the run's own master file: wavelength, beam centre and detector
+distance (`RawData.__init__` / `rawdata.geometry_maps`), for a flat detector perpendicular to the beam.
+The 20261104 gas runs were taken at 0.226 m and the 20261105 runs at 0.266 m; `summary.csv` lists the
+geometry of every run.
+
+The stored powders and cake are **not** corrected for solid angle or polarization. Use
+`ProcData(proc_path).corrected(solid_angle=True, polarization=True, pol_frac=0.99)` to get them
+corrected: the solid-angle correction makes the intensities per steradian, so runs at different
+detector distances can be compared, and the polarization correction assumes a beam polarized along
+the detector x axis (horizontal) by `pol_frac`. Without the corrections the water peak sits at
+q = 1.93 1/A; with them at 1.97, matching the beamline's own azimuthal integration
+(`/entry/azint` in the master files).
 
 
 ## Mask labels

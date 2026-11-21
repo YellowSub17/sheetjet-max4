@@ -6,7 +6,7 @@ import traceback
 
 
 from const import *
-from rundata import RunData, STATS_VERSION
+from rawdata import RawData, STATS_VERSION
 
 
 
@@ -56,7 +56,7 @@ if __name__=='__main__':
         print(f'{date} {group}-{sub_group}_{run_number}')
         t0 = time.time()
         try:
-            run = RunData(date, group, sub_group, run_number)
+            run = RawData(date, group, sub_group, run_number)
             process_run(run, overwrite=args.overwrite)
             print(f'    done in {time.time()-t0:.0f} s -> {run.proc_path}')
         except Exception as e:

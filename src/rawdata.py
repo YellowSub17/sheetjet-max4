@@ -55,12 +55,26 @@ MASK_VERSION = 6
 STATS_VERSION = 1
 
 
+def geometry_maps(beam_x, beam_y, clen, lamb):
+    '''Per-pixel x, y (m, from the beam centre), scattering angle 2theta (rad) and q (1/A), for a flat
+    detector perpendicular to the beam at distance clen (m).'''
+    xx, yy = np.meshgrid((np.arange(DET_SHAPE[1]) - beam_x)*PIXEL_DX, (np.arange(DET_SHAPE[0]) - beam_y)*PIXEL_DX)
+    two_theta = np.arctan2(np.hypot(xx, yy), clen)
+    return xx, yy, two_theta, 4 * np.pi / lamb * np.sin(two_theta/2)
+
+
+def cake_index(qidx, phi, n_sec):
+    '''Cake bin of each pixel: pairs of powder q bins x n_sec sectors centred on 0, 90, 180, 270 deg.'''
+    sec = np.floor((phi / (2*np.pi) + 0.5/n_sec) * n_sec).astype(int) % n_sec
+    return (qidx // 2) * n_sec + sec
+
+
 def hist_edges():
     '''Edges of the raw-value histograms: unit bins centred on -16 ... 1023, then 48 log bins up to 2^24.'''
     return np.concatenate([np.arange(-16.5, 1024), np.geomspace(1023.5, 2**24, 49)[1:]])
 
 
-class RunData():
+class RawData():
 
 
 
@@ -74,7 +88,7 @@ class RunData():
         self._flatfield = None
         self._warned_missing = False
         self.master_path = f'{DATA_DIR}/{self.date}/raw/{group}/{group}-{sub_group}/{group}-{sub_group}_{run_number}_master.h5'
-        self.proc_path = f'{PROC_DIR}/{group}/{group}-{sub_group}_{run_number}_proc.h5'
+        self.proc_path = proc_path(group, sub_group, run_number)
 
 
 
@@ -87,6 +101,8 @@ class RunData():
             self.beam_x = f['/entry/instrument/detector/beam_center_x'][...]
             self.beam_y = f['/entry/instrument/detector/beam_center_y'][...]
             self.count_time = f['/entry/instrument/detector/count_time'][...]
+            cycles = f.get('/entry/instrument/detector/number_of_cycles')
+            self.n_cycles = int(cycles[()]) if cycles is not None else 0   # sub-frames summed per image
 
             self.n_images = f['/entry/instrument/detector/detectorSpecific/nimages'][...]
             sat = f.get('/entry/instrument/detector/saturation_value')
@@ -106,11 +122,8 @@ class RunData():
         self.xpts= (np.arange(DET_SHAPE[1]) - self.beam_x)*PIXEL_DX
         self.ypts = (np.arange(DET_SHAPE[0]) - self.beam_y)*PIXEL_DX
 
-        self.xx, self.yy = np.meshgrid(self.xpts, self.ypts)
-
+        self.xx, self.yy, self.two_theta_map, self.q_map = geometry_maps(self.beam_x, self.beam_y, self.clen, self.lamb)
         self.r_map = np.hypot(self.xx, self.yy)
-        self.two_theta_map = np.arctan2(self.r_map, self.clen)
-        self.q_map = 4 * np.pi / self.lamb * np.sin(self.two_theta_map/2)
 
 
     def get_mask(self,qmin = 0.1, qmax=3,):
@@ -378,13 +391,15 @@ class RunData():
         '''Write (or replace) a dataset in this run's proc file.'''
         os.makedirs(os.path.dirname(self.proc_path), exist_ok=True)
         with h5py.File(self.proc_path, 'a') as f:
-            if 'master_path' not in f.attrs:
-                f.attrs['master_path'] = self.master_path
-                f.attrs['n_images'] = self.n_images
-                f.attrs['beam_x'] = self.beam_x
-                f.attrs['beam_y'] = self.beam_y
-                f.attrs['clen'] = self.clen
-                f.attrs['lamb'] = self.lamb
+            # run metadata, refreshed on every write so older proc files pick up new fields
+            f.attrs['master_path'] = self.master_path
+            f.attrs['n_images'] = self.n_images
+            f.attrs['beam_x'] = self.beam_x
+            f.attrs['beam_y'] = self.beam_y
+            f.attrs['clen'] = self.clen
+            f.attrs['lamb'] = self.lamb
+            f.attrs['count_time'] = self.count_time
+            f.attrs['n_cycles'] = self.n_cycles
             if name in f:
                 del f[name]
             dset = f.create_dataset(name, data=data, compression='gzip')
@@ -428,9 +443,7 @@ class RunData():
         qidx = qidx[sel]
 
         # cake: nq/2 q bins (pairs of powder bins) x n_sec sectors centred on 0, 90, 180, 270 deg
-        phi = np.arctan2(self.yy, self.xx).ravel()[sel]
-        sec = np.floor((phi / (2*np.pi) + 0.5/n_sec) * n_sec).astype(int) % n_sec
-        cidx = (qidx // 2) * n_sec + sec
+        cidx = cake_index(qidx, np.arctan2(self.yy, self.xx).ravel()[sel], n_sec)
 
         return sel, qidx, cidx, 0.5*(edges[1:] + edges[:-1]), self.get_flatfield().ravel()[sel]
 

@@ -18,4 +18,4 @@ dependencies = [
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["const", "rundata"]
+py-modules = ["const", "rawdata", "procdata"]

@@ -5,22 +5,23 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from const import MOD_ORIGINS, MOD_SHAPE
-from plot_powders import load_proc
+from procdata import as_procdata
 
 
 
-def plot_flatfield(proc_path):
-    '''Flat field used for this run's powders (from /powder/I), with each module's gain written on it.'''
-    with h5py.File(proc_path, 'r') as f:
-        ff_path = f['powder/I'].attrs.get('flatfield') if 'powder/I' in f else None
-    if ff_path is None or ff_path == 'None':
-        print(f'{proc_path}: no flat field used for the powders')
+def plot_flatfield(p):
+    '''Flat field used for this run's powders (from /powder/I), with each module's gain written on it
+    (p: ProcData or proc file path).'''
+    p = as_procdata(p)
+    ff_path = p.flatfield_path
+    if ff_path is None:
+        print(f'{p.path}: no flat field used for the powders')
         return
 
     with h5py.File(ff_path, 'r') as f:
         ff = f['flatfield'][...].astype(float)
         gains = f['module_gains'][...]
-    ff[load_proc(proc_path)['mask'] == 1] = np.nan   # gaps
+    ff[p.mask == 1] = np.nan   # gaps
 
     span = np.nanmax(np.abs(ff - 1))
     plt.figure(figsize=(9, 8))
@@ -29,7 +30,7 @@ def plot_flatfield(proc_path):
     for g, (r, c) in zip(gains, MOD_ORIGINS):
         plt.text(c + MOD_SHAPE[1]/2, r + MOD_SHAPE[0]/2, f'{g:.3f}', ha='center', va='center', fontsize=10,
                  color='white' if abs(g - 1) > 0.6*span else 'black')
-    plt.title(f'{proc_path.split("/")[-1]}\nflat field: {ff_path.split("/")[-1]}')
+    plt.title(f'{p.name}\nflat field: {ff_path.split("/")[-1]}')
 
 
 

@@ -15,12 +15,11 @@ usage: python plot/plot_aniso.py SAMPLE_PROC [SAMPLE_PROC ...] --gas GAS_PROC [G
 import argparse
 import warnings
 
-import h5py
 import numpy as np
 import matplotlib.pyplot as plt
 
-from const import DET_SHAPE, PIXEL_DX
-from plot_powders import load_proc
+from const import PIXEL_DX
+from procdata import as_procdata
 
 
 
@@ -33,30 +32,21 @@ N_SEC = 36                              # azimuthal sectors in the cake
 class Aniso:
     '''Flat-fielded run mean, good pixels and geometry for one proc file, about a given centre.'''
 
-    def __init__(self, proc_path, centre=None):
-        p = load_proc(proc_path)
-        self.name = proc_path.split('/')[-1].replace('_proc.h5', '')
-        self.clen, self.lamb = float(p['attrs']['clen']), float(p['attrs']['lamb'])
+    def __init__(self, p, centre=None):
+        self.p = as_procdata(p)
+        self.name = self.p.name
+        self.clen, self.lamb = float(self.p.attrs['clen']), float(self.p.attrs['lamb'])
+        self.img = self.p.mean.astype(np.float64) / self.p.flatfield()
+        self.mask = self.p.mask
+        self.good = (self.mask == 0) & np.isfinite(self.img) & (self.img >= 0)
+        self.set_centre(centre)
 
-        with h5py.File(proc_path, 'r') as f:
-            ff_path = f['powder/I'].attrs.get('flatfield') if 'powder/I' in f else None
-        ff = np.ones(DET_SHAPE)
-        if ff_path is not None and ff_path != 'None':
-            with h5py.File(ff_path, 'r') as f:
-                ff = f['flatfield'][...]
-
-        self.img = p['mean'].astype(np.float64) / ff
-        self.mask = p['mask']
-        self.good = (p['mask'] == 0) & np.isfinite(self.img) & (self.img >= 0)
-        self.set_centre(centre or (float(p['attrs']['beam_x']), float(p['attrs']['beam_y'])))
-
-    def set_centre(self, centre):
-        self.centre = centre
-        yy, xx = np.indices(DET_SHAPE)
-        dx, dy = xx - centre[0], yy - centre[1]
-        self.r = np.hypot(dx, dy)
-        self.phi = np.arctan2(dy, dx)
-        self.q = 4*np.pi/self.lamb * np.sin(np.arctan(self.r*PIXEL_DX/self.clen)/2)
+    def set_centre(self, centre=None):
+        '''Geometry about centre (x, y) in pixels; None = the beam centre of the run.'''
+        xx, yy, _, self.q = self.p.geometry(centre)
+        self.centre = (float(self.p.attrs['beam_x']), float(self.p.attrs['beam_y'])) if centre is None else tuple(centre)
+        self.r = np.hypot(xx, yy) / PIXEL_DX
+        self.phi = np.arctan2(yy, xx)
 
     def harmonics(self, qe=QE_HARM):
         '''Least-squares fit of I = a0 + c1 cos + s1 sin + c2 cos2 + s2 sin2 in each q bin, on good

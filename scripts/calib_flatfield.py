@@ -20,7 +20,7 @@ import h5py
 import numpy as np
 
 from const import *
-from rundata import RunData
+from rawdata import RawData
 from process import find_runs
 
 
@@ -141,7 +141,7 @@ if __name__=='__main__':
     for date, group, sub_group, run_number in find_runs(args.date, args.group):
         name = f'{date}/{group}-{sub_group}_{run_number}'
         try:
-            run = RunData(date, group, sub_group, run_number, flatfield=None)
+            run = RawData(date, group, sub_group, run_number, flatfield=None)
             g, e, ratios, misfit = fit_module_gains(run)
         except FileNotFoundError as err:
             print(f'skipping {name}: {err}')
